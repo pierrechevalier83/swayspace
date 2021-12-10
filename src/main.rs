@@ -5,32 +5,27 @@ use structopt::StructOpt;
 use swayipc::Connection;
 
 #[derive(Debug)]
-enum Workspace {
+enum To {
     Prev,
     Next,
-    Num(i32),
 }
 
-impl FromStr for Workspace {
+impl FromStr for To {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "prev" => Ok(Self::Prev),
-            "next" => Ok(Self::Next),
-            s => Ok(Self::Num(
-                s.parse::<i32>()
-                    .map_err(|_| format!("Can't parse {} as Command", s))?,
-            )),
+            "prev-workspace" => Ok(Self::Prev),
+            "next-workspace" => Ok(Self::Next),
+            s => Err(format!("Failed to parse {} as --to. Expected one of [prev-workspace, next-workspace]", s))
         }
     }
 }
 
-impl std::fmt::Display for Workspace {
+impl std::fmt::Display for To {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Workspace::Next => write!(f, "next"),
-            Workspace::Prev => write!(f, "prev"),
-            Workspace::Num(n) => write!(f, "number {}", n),
+            To::Next => write!(f, "next"),
+            To::Prev => write!(f, "prev"),
         }
     }
 }
@@ -130,28 +125,27 @@ impl WindowManagerState {
     }
 }
 
-fn pick_destination(wm: &mut Connection, opt: Opt) -> Workspace {
+fn pick_destination(wm: &mut Connection, opt: Opt) -> i32 {
     let wm_state = WindowManagerState::from_wm(wm);
-    Workspace::Num(match opt.to {
-        Workspace::Next => wm_state.next_workspace_on_focused_output(),
-        Workspace::Prev => wm_state.prev_workspace_on_focused_output(),
-        Workspace::Num(n) => n,
-    })
+    match opt.to {
+        To::Next => wm_state.next_workspace_on_focused_output(),
+        To::Prev => wm_state.prev_workspace_on_focused_output(),
+    }
 }
 
 #[derive(Debug)]
-enum Command {
-    MoveToWorkspace,
-    MoveContainerToWorkspace,
+enum Do {
+    MoveFocus,
+    MoveContainer,
 }
 
-impl FromStr for Command {
+impl FromStr for Do {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "workspace" => Ok(Self::MoveToWorkspace),
-            "move-container-to-workspace" => Ok(Self::MoveContainerToWorkspace),
-            _ => Err(format!("Can't parse {} as Command", s)),
+            "move-focus" => Ok(Self::MoveFocus),
+            "move-container" => Ok(Self::MoveContainer),
+            _ => Err(format!("Failed to parse {} as --do. Expected one of [move-focus, move-container]", s)),
         }
     }
 }
@@ -159,9 +153,10 @@ impl FromStr for Command {
 #[derive(Debug, StructOpt)]
 #[structopt(about = "Automatically create workspaces under sway like gnome does")]
 struct Opt {
-    #[structopt(default_value = "workspace")]
-    command: Command,
-    to: Workspace,
+    #[structopt(long="do", default_value = "move-focus")]
+    command: Do,
+    #[structopt(long="to", default_value = "next-workspace")]
+    to: To,
 }
 
 fn main() {
@@ -169,16 +164,16 @@ fn main() {
     let opt = Opt::from_args();
     let mut wm = swayipc::Connection::new().unwrap();
     match opt.command {
-        Command::MoveToWorkspace => {
+        Do::MoveFocus => {
             let destination = pick_destination(&mut wm, opt);
-            wm.run_command(format!("workspace {}", destination))
+            wm.run_command(format!("workspace number {}", destination))
                 .unwrap();
         }
-        Command::MoveContainerToWorkspace => {
+        Do::MoveContainer => {
             let destination = pick_destination(&mut wm, opt);
-            wm.run_command(format!("move container to workspace {}", destination))
+            wm.run_command(format!("move container to workspace number {}", destination))
                 .unwrap();
-            wm.run_command(format!("workspace {}", destination))
+            wm.run_command(format!("workspace number {}", destination))
                 .unwrap();
         }
     }
