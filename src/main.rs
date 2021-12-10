@@ -83,7 +83,7 @@ impl WindowManagerState {
             is_current_workspace_empty,
         }
     }
-    fn make_new_workspace_index(&self) -> i32 {
+    fn make_new_workspace_at_end(&self) -> i32 {
         let mut index = self.max_workspace_on_focused_output + 1;
         // skip over any existing workspaces on unfocused outputs and pick the next_available number
         while self.workspaces_on_unfocused_outputs.contains(&index) {
@@ -91,42 +91,49 @@ impl WindowManagerState {
         }
         index
     }
+    fn make_new_workspace_at_start(&self) -> i32 {
+        let index = self.min_workspace_on_focused_output;
+
+        (1..index)
+            .rev()
+            .find(|num| !self.workspaces_on_unfocused_outputs.contains(&num))
+            .unwrap_or(index)
+    }
     fn next_workspace_on_focused_output(&self) -> i32 {
-        // Skip gaps when cycling between workspaces so the
-        // behaviour can be predictable
-        let next = self
-            .workspaces_on_focused_output
-            .iter()
-            .filter(|&num| num > &self.current_workspace)
-            .min()
-            .copied()
-            .unwrap_or(self.make_new_workspace_index());
-        next
+        if self.current_workspace == self.max_workspace_on_focused_output
+            && self.is_current_workspace_empty
+            && self.workspaces_on_focused_output.len() > 1
+        {
+            self.min_workspace_on_focused_output
+        } else {
+            self.workspaces_on_focused_output
+                .iter()
+                .filter(|&num| num > &self.current_workspace)
+                .min()
+                .copied()
+                .unwrap_or(self.make_new_workspace_at_end())
+        }
     }
     fn prev_workspace_on_focused_output(&self) -> i32 {
-        self.workspaces_on_focused_output
-            .iter()
-            .filter(|&num| num < &self.current_workspace)
-            .max()
-            .copied()
-            .unwrap_or(self.make_new_workspace_index())
+        if self.current_workspace == self.min_workspace_on_focused_output
+            && self.is_current_workspace_empty
+        {
+            self.make_new_workspace_at_start()
+        } else {
+            self.workspaces_on_focused_output
+                .iter()
+                .filter(|&num| num < &self.current_workspace)
+                .max()
+                .copied()
+                .unwrap_or(self.make_new_workspace_at_end())
+        }
     }
 }
 
 fn pick_destination(wm: &mut Connection, opt: Opt) -> Workspace {
     let wm_state = WindowManagerState::from_wm(wm);
     Workspace::Num(match opt.to {
-        Workspace::Next => {
-            // Wrap around if the current workspace is the max and it's empty
-            // Note: That won't happen when the command is MoveContainerToWorkspace
-            if wm_state.current_workspace == wm_state.max_workspace_on_focused_output
-                && wm_state.is_current_workspace_empty
-            {
-                wm_state.min_workspace_on_focused_output
-            } else {
-                wm_state.next_workspace_on_focused_output()
-            }
-        }
+        Workspace::Next => wm_state.next_workspace_on_focused_output(),
         Workspace::Prev => wm_state.prev_workspace_on_focused_output(),
         Workspace::Num(n) => n,
     })
