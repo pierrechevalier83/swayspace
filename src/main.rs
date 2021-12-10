@@ -1,3 +1,5 @@
+#![feature(iter_partition_in_place)]
+
 use std::str::FromStr;
 use structopt::StructOpt;
 use swayipc::Connection;
@@ -33,80 +35,101 @@ impl std::fmt::Display for Workspace {
     }
 }
 
-fn get_active_workspace_name(wm: &mut Connection) -> Option<String> {
-    let outputs = wm.get_outputs().unwrap();
-    let current_output = outputs.iter().find(|o| o.active).unwrap();
-    current_output.current_workspace.clone()
+struct WindowManagerState {
+    current_workspace: i32,
+    workspaces_on_focused_output: Vec<i32>,
+    workspaces_on_unfocused_outputs: Vec<i32>,
+    max_workspace_on_focused_output: i32,
+    min_workspace_on_focused_output: i32,
+    is_current_workspace_empty: bool,
+}
+
+impl WindowManagerState {
+    fn from_wm(wm: &mut Connection) -> Self {
+        let focused_output_name = wm
+            .get_tree()
+            .unwrap()
+            .find_focused(|node| match node.node_type {
+                swayipc::reply::NodeType::Output => true,
+                _ => false,
+            })
+            .unwrap()
+            .name
+            .unwrap();
+
+        let mut all_workspaces = wm.get_workspaces().unwrap();
+        let current_workspace = all_workspaces.iter().find(|w| w.focused).unwrap();
+        let is_current_workspace_empty = current_workspace.representation == "";
+        let current_workspace = current_workspace.num;
+        let partition_point = all_workspaces
+            .iter_mut()
+            .partition_in_place(|w| w.output == focused_output_name);
+        let workspaces_on_focused_output = all_workspaces[0..partition_point]
+            .iter()
+            .map(|w| w.num)
+            .collect::<Vec<_>>();
+        let workspaces_on_unfocused_outputs = all_workspaces[partition_point..]
+            .iter()
+            .map(|w| w.num)
+            .collect::<Vec<_>>();
+        let max_workspace_on_focused_output = *workspaces_on_focused_output.iter().max().unwrap();
+        let min_workspace_on_focused_output = *workspaces_on_focused_output.iter().min().unwrap();
+        Self {
+            current_workspace,
+            workspaces_on_focused_output,
+            workspaces_on_unfocused_outputs,
+            max_workspace_on_focused_output,
+            min_workspace_on_focused_output,
+            is_current_workspace_empty,
+        }
+    }
+    fn make_new_workspace_index(&self) -> i32 {
+        let mut index = self.max_workspace_on_focused_output + 1;
+        // skip over any existing workspaces on unfocused outputs and pick the next_available number
+        while self.workspaces_on_unfocused_outputs.contains(&index) {
+            index += 1;
+        }
+        index
+    }
+    fn next_workspace_on_focused_output(&self) -> i32 {
+        // Skip gaps when cycling between workspaces so the
+        // behaviour can be predictable
+        let next = self
+            .workspaces_on_focused_output
+            .iter()
+            .filter(|&num| num > &self.current_workspace)
+            .min()
+            .copied()
+            .unwrap_or(self.make_new_workspace_index());
+        next
+    }
+    fn prev_workspace_on_focused_output(&self) -> i32 {
+        self.workspaces_on_focused_output
+            .iter()
+            .filter(|&num| num < &self.current_workspace)
+            .max()
+            .copied()
+            .unwrap_or(self.make_new_workspace_index())
+    }
 }
 
 fn pick_destination(wm: &mut Connection, opt: Opt) -> Workspace {
-    // TODO: filter the ones on this output?
-    // (Think multiscreen)
-    let all_workspaces = wm.get_workspaces().unwrap();
-    let max_workspace_num = all_workspaces.iter().map(|w| w.num).max().unwrap();
-    let min_workspace_num = all_workspaces.iter().map(|w| w.num).min().unwrap();
-    let current_workspace = all_workspaces
-        .iter()
-        .find(|w| Some(&w.name) == get_active_workspace_name(wm).as_ref())
-        .unwrap();
-
-    match opt.to {
+    let wm_state = WindowManagerState::from_wm(wm);
+    Workspace::Num(match opt.to {
         Workspace::Next => {
-            match opt.command {
-                Command::MoveToWorkspace => {
-                    // If at max workspace and workspace not empty, create one extra workspace
-                    // If the workspace is empty, loop back to the front instead
-                    if current_workspace.num == max_workspace_num
-                        && current_workspace.representation != ""
-                        && current_workspace.num < 10
-                    {
-                        Workspace::Num(current_workspace.num + 1)
-                    } else {
-                        // Skip gaps when cycling between workspaces so the
-                        // behaviour can be predictable
-                        opt.to
-                    }
-                }
-                Command::MoveContainerToWorkspace => {
-                    if current_workspace.num == max_workspace_num && current_workspace.num >= 10 {
-                        Workspace::Num(1)
-                    } else {
-                        // When moving a window, we want to occupy any gap between workspaces
-                        // If we hit the max workspace, we want to go beyond it
-                        Workspace::Num(current_workspace.num + 1)
-                    }
-                }
+            // Wrap around if the current workspace is the max and it's empty
+            // Note: That won't happen when the command is MoveContainerToWorkspace
+            if wm_state.current_workspace == wm_state.max_workspace_on_focused_output
+                && wm_state.is_current_workspace_empty
+            {
+                wm_state.min_workspace_on_focused_output
+            } else {
+                wm_state.next_workspace_on_focused_output()
             }
         }
-        Workspace::Prev => {
-            match opt.command {
-                Command::MoveToWorkspace => {
-                    if current_workspace.num == min_workspace_num && max_workspace_num < 10 {
-                        // At smallest possible workspace.
-                        // Cycle back to one workspace after the max one
-                        Workspace::Num(max_workspace_num + 1)
-                    } else {
-                        // Skip gaps when cycling between workspaces so the
-                        // behaviour can be predictable
-                        opt.to
-                    }
-                }
-                Command::MoveContainerToWorkspace => {
-                    // Unlike "prev", don't skip gaps between non-contiguous workspaces
-                    // Also unlike prev, loop back to max + 1 rather than map
-                    if current_workspace.num == 1 {
-                        // Don't create workspaces with num < 1 or sway gets confused instead, create a new
-                        // workspace after the max one
-                        Workspace::Num(max_workspace_num + 1)
-                    } else {
-                        // Decrement without skipping gaps
-                        Workspace::Num(current_workspace.num - 1)
-                    }
-                }
-            }
-        }
-        Workspace::Num(_) => opt.to,
-    }
+        Workspace::Prev => wm_state.prev_workspace_on_focused_output(),
+        Workspace::Num(n) => n,
+    })
 }
 
 #[derive(Debug)]
