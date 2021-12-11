@@ -69,6 +69,7 @@ struct WindowManagerState {
 #[derive(PartialEq, Eq, Ord, PartialOrd)]
 struct Output {
     x_pos: i64,
+    y_pos: i64,
     name: String,
 }
 
@@ -91,6 +92,7 @@ impl WindowManagerState {
             .iter()
             .map(|o| Output {
                 x_pos: o.rect.x,
+                y_pos: o.rect.y,
                 name: o.name.clone(),
             })
             .collect::<Vec<_>>();
