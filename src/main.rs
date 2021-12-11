@@ -164,8 +164,7 @@ impl WindowManagerState {
                     Some(self.make_new_workspace_at_end().try_into().unwrap())
                 }
                 .into_iter()
-            })
-            .filter(|w| !self.workspaces_on_unfocused_outputs.contains(&(*w).into()));
+            });
         match dir {
             Direction::Next => iter
                 .cycle()
@@ -190,6 +189,7 @@ impl WindowManagerState {
             true => self
                 .cycle_through(
                     (1..=self.max_workspace_on_focused_output)
+                        .filter(|w| !self.workspaces_on_unfocused_outputs.contains(&w))
                         .collect::<Vec<_>>()
                         .into_iter(),
                     dir,
