@@ -147,7 +147,12 @@ impl WindowManagerState {
         }
         index
     }
-    fn cycle_through<'a, It>(&'a self, workspaces: It, dir: Direction, static_behaviour: bool) -> Option<i32>
+    fn cycle_through<'a, It>(
+        &'a self,
+        workspaces: It,
+        dir: Direction,
+        static_behaviour: bool,
+    ) -> Option<i32>
     where
         It: Iterator<Item = i32>
             + DoubleEndedIterator<Item = i32>
@@ -156,15 +161,14 @@ impl WindowManagerState {
             + Clone
             + 'a,
     {
-        let iter = workspaces
-            .chain({
-                if self.is_max_workspace_empty || static_behaviour {
-                    None
-                } else {
-                    Some(self.make_new_workspace_at_end().try_into().unwrap())
-                }
-                .into_iter()
-            });
+        let iter = workspaces.chain({
+            if self.is_max_workspace_empty || static_behaviour {
+                None
+            } else {
+                Some(self.make_new_workspace_at_end().try_into().unwrap())
+            }
+            .into_iter()
+        });
         match dir {
             Direction::Next => iter
                 .cycle()
@@ -183,7 +187,7 @@ impl WindowManagerState {
         &self,
         walk_into_gaps: bool,
         dir: Direction,
-        static_behaviour: bool
+        static_behaviour: bool,
     ) -> i32 {
         match walk_into_gaps {
             true => self
@@ -193,11 +197,15 @@ impl WindowManagerState {
                         .collect::<Vec<_>>()
                         .into_iter(),
                     dir,
-                    static_behaviour
+                    static_behaviour,
                 )
                 .unwrap(),
             false => self
-                .cycle_through(self.workspaces_on_focused_output.iter().copied(), dir, static_behaviour)
+                .cycle_through(
+                    self.workspaces_on_focused_output.iter().copied(),
+                    dir,
+                    static_behaviour,
+                )
                 .unwrap(),
         }
     }
@@ -209,9 +217,11 @@ impl WindowManagerState {
 
 fn pick_destination(wm_state: &WindowManagerState, opt: &Opt) -> i32 {
     match (opt.to, opt.dir) {
-        (To::Workspace, dir) => {
-            wm_state.cycle_through_workspaces_on_focused_output(opt.walk_into_gaps, dir, opt.static_behaviour)
-        }
+        (To::Workspace, dir) => wm_state.cycle_through_workspaces_on_focused_output(
+            opt.walk_into_gaps,
+            dir,
+            opt.static_behaviour,
+        ),
         (To::Output, dir) => wm_state.cycle_through_outputs(dir),
     }
 }
