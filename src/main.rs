@@ -52,6 +52,8 @@ struct Opt {
     dir: Direction,
     #[structopt(long = "walk-into-gaps")]
     walk_into_gaps: bool,
+    #[structopt(long = "static")]
+    static_behaviour: bool,
 }
 
 struct WindowManagerState {
@@ -145,7 +147,7 @@ impl WindowManagerState {
         }
         index
     }
-    fn cycle_through<'a, It>(&'a self, workspaces: It, dir: Direction) -> Option<i32>
+    fn cycle_through<'a, It>(&'a self, workspaces: It, dir: Direction, static_behaviour: bool) -> Option<i32>
     where
         It: Iterator<Item = i32>
             + DoubleEndedIterator<Item = i32>
@@ -156,7 +158,7 @@ impl WindowManagerState {
     {
         let iter = workspaces
             .chain({
-                if self.is_max_workspace_empty {
+                if self.is_max_workspace_empty || static_behaviour {
                     None
                 } else {
                     Some(self.make_new_workspace_at_end().try_into().unwrap())
@@ -182,6 +184,7 @@ impl WindowManagerState {
         &self,
         walk_into_gaps: bool,
         dir: Direction,
+        static_behaviour: bool
     ) -> i32 {
         match walk_into_gaps {
             true => self
@@ -190,52 +193,26 @@ impl WindowManagerState {
                         .collect::<Vec<_>>()
                         .into_iter(),
                     dir,
+                    static_behaviour
                 )
                 .unwrap(),
             false => self
-                .cycle_through(self.workspaces_on_focused_output.iter().copied(), dir)
+                .cycle_through(self.workspaces_on_focused_output.iter().copied(), dir, static_behaviour)
                 .unwrap(),
         }
     }
-
-    fn visible_workspace_on_next_output(&self) -> i32 {
-        let current_index = self
-            .visible_workspace_per_output
-            .iter()
-            .position(|&x| x == self.current_workspace);
-        current_index
-            .map(|i| {
-                self.visible_workspace_per_output
-                    .iter()
-                    .cycle()
-                    .nth(i + 1)
-                    .unwrap()
-            })
-            .copied()
-            .unwrap_or(self.current_workspace)
-    }
-    fn visible_workspace_on_prev_output(&self) -> i32 {
-        let current_index = self
-            .visible_workspace_per_output
-            .iter()
-            .position(|&x| x == self.current_workspace)
-            .unwrap();
-        let prev_index = if current_index == 0 {
-            self.visible_workspace_per_output.len() - 1
-        } else {
-            current_index - 1
-        };
-        self.visible_workspace_per_output[prev_index]
+    fn cycle_through_outputs(&self, dir: Direction) -> i32 {
+        self.cycle_through(self.visible_workspace_per_output.iter().copied(), dir, true)
+            .unwrap()
     }
 }
 
 fn pick_destination(wm_state: &WindowManagerState, opt: &Opt) -> i32 {
     match (opt.to, opt.dir) {
         (To::Workspace, dir) => {
-            wm_state.cycle_through_workspaces_on_focused_output(opt.walk_into_gaps, dir)
+            wm_state.cycle_through_workspaces_on_focused_output(opt.walk_into_gaps, dir, opt.static_behaviour)
         }
-        (To::Output, Direction::Next) => wm_state.visible_workspace_on_next_output(),
-        (To::Output, Direction::Prev) => wm_state.visible_workspace_on_prev_output(),
+        (To::Output, dir) => wm_state.cycle_through_outputs(dir),
     }
 }
 
