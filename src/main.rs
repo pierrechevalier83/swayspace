@@ -116,10 +116,11 @@ impl WindowManagerState {
         let partition_point = all_workspaces
             .iter_mut()
             .partition_in_place(|w| w.output == focused_output_name);
-        let workspaces_on_focused_output = all_workspaces[0..partition_point]
+        let mut workspaces_on_focused_output = all_workspaces[0..partition_point]
             .iter()
             .map(|w| w.num)
             .collect::<Vec<_>>();
+        workspaces_on_focused_output.sort_unstable();
         let workspaces_on_unfocused_outputs = all_workspaces[partition_point..]
             .iter()
             .map(|w| w.num)
@@ -147,6 +148,13 @@ impl WindowManagerState {
         }
         index
     }
+    // Note: only to be called with a single workspace on this display
+    fn make_new_workspace_at_start(&self) -> i32 {
+        (1..self.current_workspace)
+            .rev()
+            .find(|num| !self.workspaces_on_unfocused_outputs.contains(&num))
+            .unwrap_or(self.current_workspace)
+    }
     fn cycle_through<'a, It>(
         &'a self,
         workspaces: It,
@@ -161,14 +169,27 @@ impl WindowManagerState {
             + Clone
             + 'a,
     {
-        let iter = workspaces.chain({
-            if self.is_max_workspace_empty || static_behaviour {
-                None
-            } else {
-                Some(self.make_new_workspace_at_end().try_into().unwrap())
-            }
-            .into_iter()
-        });
+        let iter = workspaces
+            .chain({
+                if static_behaviour
+                    || (self.is_max_workspace_empty && self.workspaces_on_focused_output.len() > 1)
+                {
+                    None
+                } else {
+                    Some(self.make_new_workspace_at_end().try_into().unwrap())
+                }
+                .into_iter()
+            })
+            .chain(
+                if static_behaviour
+                    || !(self.is_max_workspace_empty
+                        && self.workspaces_on_focused_output.len() == 1)
+                {
+                    None
+                } else {
+                    Some(self.make_new_workspace_at_start().try_into().unwrap())
+                },
+            );
         match dir {
             Direction::Next => iter
                 .cycle()
