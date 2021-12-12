@@ -44,16 +44,17 @@ impl FromStr for Do {
 #[derive(Debug, StructOpt)]
 #[structopt(about = "Automatically create workspaces under sway like gnome does")]
 struct Opt {
-    #[structopt(default_value = "move-focus-to")]
+    #[structopt(default_value = "move-focus-to", possible_values = &["move-focus-to", "move-container-to"])]
     command: Do,
     #[structopt(default_value = "workspace", possible_values = &To::variants(), case_insensitive = true)]
     to: To,
-    #[structopt(default_value = "next", possible_values = &Direction::variants(), case_insensitive = true)]
+    #[structopt(default_value = "next", possible_values = &Direction::variants(), case_insensitive = true, help = "Direction to move towards")]
     dir: Direction,
-    #[structopt(long = "walk-into-gaps")]
-    walk_into_gaps: bool,
-    #[structopt(long = "static")]
-    static_behaviour: bool,
+    #[structopt(
+        long = "dynamic",
+        help = "Used when cycling between workspaces: If the next available workspace does not exist, create it."
+    )]
+    dynamic: bool,
 }
 
 struct WindowManagerState {
@@ -61,7 +62,6 @@ struct WindowManagerState {
     workspaces_on_focused_output: Vec<i32>,
     workspaces_on_unfocused_outputs: Vec<i32>,
     max_workspace_on_focused_output: i32,
-    is_max_workspace_empty: bool,
     // For each output in order of its x position, the num of its visible workspace
     visible_workspace_per_output: Vec<i32>,
 }
@@ -128,123 +128,65 @@ impl WindowManagerState {
             .map(|w| w.num)
             .collect::<Vec<_>>();
         let max_workspace_on_focused_output = *workspaces_on_focused_output.iter().max().unwrap();
-        let max_workspace = all_workspaces
-            .iter()
-            .find(|w| w.num == max_workspace_on_focused_output)
-            .unwrap();
-        let is_max_workspace_empty = max_workspace.representation == "";
         Self {
             current_workspace,
             workspaces_on_focused_output,
             workspaces_on_unfocused_outputs,
             max_workspace_on_focused_output,
-            is_max_workspace_empty,
             visible_workspace_per_output,
         }
     }
-    fn make_new_workspace_at_end(&self) -> i32 {
-        let mut index = self.max_workspace_on_focused_output + 1;
-        // skip over any existing workspaces on unfocused outputs and pick the next_available number
-        while self.workspaces_on_unfocused_outputs.contains(&index) {
-            index += 1;
-        }
-        index
-    }
-    // Note: only to be called with a single workspace on this display
-    fn make_new_workspace_at_start(&self) -> i32 {
-        (1..self.current_workspace)
-            .rev()
-            .find(|num| !self.workspaces_on_unfocused_outputs.contains(&num))
+    fn next_workspace(&self, workspaces: impl Iterator<Item = i32>) -> i32 {
+        workspaces
+            .skip_while(|&w| w != self.current_workspace)
+            .skip(1)
+            .next()
             .unwrap_or(self.current_workspace)
     }
-    fn cycle_through<'a, It>(
-        &'a self,
-        workspaces: It,
-        dir: Direction,
-        static_behaviour: bool,
-    ) -> Option<i32>
-    where
-        It: Iterator<Item = i32>
-            + DoubleEndedIterator<Item = i32>
-            + Sized
-            + ExactSizeIterator
-            + Clone
-            + 'a,
-    {
-        let iter = workspaces
-            .chain({
-                if static_behaviour
-                    || (self.is_max_workspace_empty && self.workspaces_on_focused_output.len() > 1)
-                {
-                    None
-                } else {
-                    Some(self.make_new_workspace_at_end().try_into().unwrap())
-                }
-                .into_iter()
-            })
-            .chain(
-                if static_behaviour
-                    || !(self.is_max_workspace_empty
-                        && self.workspaces_on_focused_output.len() == 1)
-                {
-                    None
-                } else {
-                    Some(self.make_new_workspace_at_start().try_into().unwrap())
-                },
-            );
-        match dir {
-            Direction::Next => iter
-                .cycle()
-                .skip_while(|&w| w != self.current_workspace)
-                .skip(1)
-                .next(),
-            Direction::Prev => iter
-                .rev()
-                .cycle()
-                .skip_while(|&w| w != self.current_workspace)
-                .skip(1)
-                .next(),
-        }
-    }
-    fn cycle_through_workspaces_on_focused_output(
-        &self,
-        walk_into_gaps: bool,
-        dir: Direction,
-        static_behaviour: bool,
-    ) -> i32 {
-        match walk_into_gaps {
-            true => self
-                .cycle_through(
-                    (1..=self.max_workspace_on_focused_output)
-                        .filter(|w| !self.workspaces_on_unfocused_outputs.contains(&w))
-                        .collect::<Vec<_>>()
-                        .into_iter(),
-                    dir,
-                    static_behaviour,
-                )
-                .unwrap(),
-            false => self
-                .cycle_through(
-                    self.workspaces_on_focused_output.iter().copied(),
-                    dir,
-                    static_behaviour,
-                )
-                .unwrap(),
+    fn cycle_through_workspaces_on_focused_output(&self, dynamic: bool, dir: Direction) -> i32 {
+        match (dir, dynamic) {
+            (Direction::Next, true) => self.next_workspace(
+                (1..).filter(|w| !self.workspaces_on_unfocused_outputs.contains(&w)),
+            ),
+            (Direction::Prev, true) => self.next_workspace(
+                (1..=self.max_workspace_on_focused_output)
+                    .filter(|w| !self.workspaces_on_unfocused_outputs.contains(&w))
+                    .rev()
+                    .cycle(),
+            ),
+            (Direction::Next, false) => {
+                self.next_workspace(self.workspaces_on_focused_output.iter().copied().cycle())
+            }
+            (Direction::Prev, false) => self.next_workspace(
+                self.workspaces_on_focused_output
+                    .iter()
+                    .copied()
+                    .rev()
+                    .cycle(),
+            ),
         }
     }
     fn cycle_through_outputs(&self, dir: Direction) -> i32 {
-        self.cycle_through(self.visible_workspace_per_output.iter().copied(), dir, true)
-            .unwrap()
+        match dir {
+            Direction::Next => {
+                self.next_workspace(self.visible_workspace_per_output.iter().copied().cycle())
+            }
+            Direction::Prev => self.next_workspace(
+                self.visible_workspace_per_output
+                    .iter()
+                    .copied()
+                    .rev()
+                    .cycle(),
+            ),
+        }
     }
 }
 
 fn pick_destination(wm_state: &WindowManagerState, opt: &Opt) -> i32 {
     match (opt.to, opt.dir) {
-        (To::Workspace, dir) => wm_state.cycle_through_workspaces_on_focused_output(
-            opt.walk_into_gaps,
-            dir,
-            opt.static_behaviour,
-        ),
+        (To::Workspace, dir) => {
+            wm_state.cycle_through_workspaces_on_focused_output(opt.dynamic, dir)
+        }
         (To::Output, dir) => wm_state.cycle_through_outputs(dir),
     }
 }
